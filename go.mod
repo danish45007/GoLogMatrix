@@ -1,0 +1,5 @@
+module github.com/danish45007/GoLogMatrix
+
+go 1.20
+
+require google.golang.org/protobuf v1.33.0

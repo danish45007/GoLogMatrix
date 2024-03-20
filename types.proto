@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+// what does option go_package do?
+option go_package = "github.com/danish45007/GoLogMatrix/wal";
+
+message WAL_Entry {
+	uint64 logSequenceNumber = 1;
+	bytes data = 2;
+	uint32 CRC = 3;
+	// optional field for check pointing
+	optional bool isCheckPoint = 4;
+}
