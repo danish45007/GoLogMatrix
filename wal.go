@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -238,6 +240,129 @@ func (w *WAL) writeEntity(data []byte, isCheckpoint bool) error {
 		entry.IsCheckPoint = &isCheckpoint
 	}
 	// write the entry to the buffer
+	return w.writeEntryToBuffer(entry)
+
+}
+
+func (w *WAL) rotateLogIfRequired() error {
+	// stat the current segment file
+	fileInfo, err := w.currentSegment.Stat()
+	if err != nil {
+		return err
+	}
+	// if the current segment file plus the buffer writer size exceeds the maxFileSize
+	//NOTE: here we include the buffer writer size is the size of the data that is yet to be written to the disk
+	if fileInfo.Size()+int64(w.bufWriter.Buffered()) >= w.maxFileSize {
+		// rotate the log
+		if err := w.rotateLog(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rotateLog rotates the log by creating a new segment file
+func (w *WAL) rotateLog() error {
+	// sync the data from the buffer to the disk before rotating the log
+	if err := w.Sync(); err != nil {
+		return err
+	}
+	// close the current segment file
+	if err := w.currentSegment.Close(); err != nil {
+		return err
+	}
+	// increment the segment index
+	w.currentSegmentIndex++
+	// check if current segment index exceeds the maxSegments
+	if w.currentSegmentIndex >= w.maxSegments {
+		// delete the oldest segment file
+		if err := w.deleteOldestSegment(); err != nil {
+			return err
+		}
+	}
+	// create a new segment file
+	segmentFile, err := createSegmentFile(w.directory, w.currentSegmentIndex)
+	if err != nil {
+		return err
+	}
+	// update the current segment file
+	w.currentSegment = segmentFile
+	// update the buffer writer
+	w.bufWriter = bufio.NewWriter(segmentFile)
 	return nil
 
+}
+
+// deleteOldestSegment deletes the oldest segment file
+func (w *WAL) deleteOldestSegment() error {
+	var oldestSegmentFilePath string
+	// get the list of log segment files with the segment prefix in the directory
+	files, err := filepath.Glob(filepath.Join(w.directory, segmentPrefix+"*"))
+	if err != nil {
+		return err
+	}
+	if len(files) == 0 {
+		return nil
+
+	} else {
+		// find the oldest segment id
+		oldestSegmentFilePath, err = w.getOldestSegmentFile(files)
+		if err != nil {
+			return err
+		}
+		// delete the oldest segment file
+		if err := os.Remove(oldestSegmentFilePath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// getOldestSegmentFile returns the path of the oldest segment file from the list of files
+func (w *WAL) getOldestSegmentFile(files []string) (string, error) {
+	var oldestSegmentFilePath string
+	oldestSegmentId := math.MaxInt64 // initialize the oldest segment id to the maximum integer value
+	for _, file := range files {
+		// get the segment id from the file name by removing the prefix and converting it to an integer
+		segmentId, err := strconv.Atoi(strings.TrimPrefix(file,
+			filepath.Join(w.directory, segmentPrefix)))
+		if err != nil {
+			return "", err
+		}
+		// if the segment id is less than the oldest segment id, update the oldest segment id
+		if segmentId < oldestSegmentId {
+			oldestSegmentId = segmentId
+			oldestSegmentFilePath = file
+		}
+	}
+	return oldestSegmentFilePath, nil
+
+}
+
+// Close closes the WAL, also calls sync to sync the data from the buffer to the disk
+func (w *WAL) Close() error {
+	// cancel the context
+	w.cancel()
+	if err := w.Sync(); err != nil {
+		return err
+	}
+	// close the current segment file
+	return w.currentSegment.Close()
+}
+
+func (w *WAL) writeEntryToBuffer(entry *WAL_Entry) error {
+	// marshal the entity before writing it to the buffer
+	marshalEntry := MarshalEntry(entry)
+	// size of the entry
+	size := int32(len(marshalEntry))
+	// write the size of the entry to the buffer before writing the entry to the buffer
+	// this is done to read the size of the entry before reading the entry
+	if err := binary.Write(w.bufWriter, binary.LittleEndian, size); err != nil {
+		return err
+	}
+	// write the entry to the buffer
+	if _, err := w.bufWriter.Write(marshalEntry); err != nil {
+		return err
+	}
+	return nil
 }
