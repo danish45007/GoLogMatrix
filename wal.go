@@ -167,6 +167,14 @@ func (w *WAL) resetSyncTimer() {
 
 // returns the last sequence number from the current segment file
 func (w *WAL) getLastSequenceNumber() (uint64, error) {
+	entry, err := w.getLastLogEntry()
+	if err != nil {
+		return 0, err
+	}
+	// if the entry is nil, return log sequence number
+	if entry == nil {
+		return entry.GetLogSequenceNumber(), nil
+	}
 	return 0, nil
 }
 
@@ -192,16 +200,35 @@ func (w *WAL) getLastLogEntry() (*WAL_Entry, error) {
 				if offset == 0 {
 					return entry, nil
 				}
-				// seek to the previous entry
-				// seek sets the offset for the next Read or Write on file to offset,
-				// interpreted according to whence: 0 means relative to the origin of the file,
-				// 1 means relative to the current offset, and 2 means relative to the end.
+				// seek to the previous entry offset
 				if _, err := file.Seek(offset, io.SeekStart); err != nil {
 					return nil, err
 				}
+				// read the entry data
+				data := make([]byte, previousSize)
+				if _, err := io.ReadFull(file, data); err != nil {
+					return nil, err
+				}
+				// unmarshal the data into the entity
+				entity, err := UnmarshalAndVerifyEntry(data)
+				if err != nil {
+					return nil, err
+				}
+				return entity, nil
 			}
+			return nil, err
 		}
-
+		// get the current offset
+		offset, err = file.Seek(0, io.SeekCurrent)
+		// set the previous size
+		previousSize = size
+		if err != nil {
+			return nil, err
+		}
+		// skip the next entry
+		if _, err := file.Seek(int64(size), io.SeekCurrent); err != nil {
+			return nil, err
+		}
 	}
 
 }
@@ -379,6 +406,17 @@ func (w *WAL) ReadAll(readFromCheckPoint bool) ([]*WAL_Entry, error) {
 		return nil, err
 	}
 	defer file.Close()
+	// read all the entries from the current segment file
+	entries, checkPoint, err := w.ReadAllEntriesFromFile(file, readFromCheckPoint)
+	if err != nil {
+		return entries, err
+	}
+	// if the readFromCheckPoint is true and the check point is not found
+	if readFromCheckPoint && checkPoint <= 0 {
+		// return an empty slice
+		return entries[:0], nil
+	}
+	return entries, nil
 }
 
 // ReadAllFromOffset start reading all log segment files from the given offset.
