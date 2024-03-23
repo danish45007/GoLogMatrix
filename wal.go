@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -502,4 +504,127 @@ func (w *WAL) ReadAllEntriesFromFile(file *os.File, readFromCheckPoint bool) ([]
 		entries = append(entries, entity)
 	}
 	return entries, checkPointLogSequenceNumber, nil
+}
+
+// Repair repairs the corrupted WAL by scanning the WAL from the start
+// and read all entries until a corrupted entry is encountered, at that point
+// the file is truncated. The func returns the number of entries that were read
+// before the corruption and overwrites the existing WAL files with the repaired entries.
+// For the WAL corruption, it verifies the CRC of the entry, if the CRC is not valid, it truncates the file at that point.
+
+func (w *WAL) Repair() ([]*WAL_Entry, error) {
+	// get all the segment files in the directory
+	files, err := filepath.Glob(filepath.Join(w.directory, segmentPrefix+"*"))
+	if err != nil {
+		return nil, err
+	}
+	var lastSegmentId int
+	if len(files) == 0 {
+		log.Fatalf("No segment files found in the directory: %s, nothing to repair", w.directory)
+	} else {
+		// get the last segment id
+		lastSegmentId, err = findLastSegmentId(files)
+		if err != nil {
+			return nil, err
+		}
+	}
+	// open the last segment log file
+	lastSegmentLogFilePath := filepath.Join(w.directory, segmentPrefix+strconv.Itoa(lastSegmentId))
+	file, err := os.OpenFile(lastSegmentLogFilePath, os.O_RDONLY, 0644)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	// seek to the beginning of the file
+	// this is done to ensure that the file is ready for reading
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	var entries []*WAL_Entry
+	for {
+		// read the size of the next entry from the file
+		var size int32
+		if err := binary.Read(file, binary.LittleEndian, &size); err != nil {
+			// if the end of the file is reached, no corruption is found
+			if err == io.EOF {
+				return entries, nil
+			}
+			// Error while reading the size of the entry
+			log.Printf("Error while reading the size of the entry: %v", err)
+			// truncate the file at this point
+			if err := w.replaceWithFixedFile(entries); err != nil {
+				return entries, err
+			}
+			return nil, nil
+		}
+		// read the entry data from the file
+		data := make([]byte, size)
+		if _, err := io.ReadFull(file, data); err != nil {
+			// Error while reading the entry data
+			log.Printf("Error while reading the entry data: %v", err)
+			// truncate the file at this point
+			if err := w.replaceWithFixedFile(entries); err != nil {
+				return entries, err
+			}
+			return entries, nil
+		}
+
+		// unmarshal the data into the entity
+		var entry WAL_Entry
+		if err := proto.Unmarshal(data, &entry); err != nil {
+			// Error while unmarshalling the data
+			log.Printf("Error while unmarshalling the data: %v", err)
+			// truncate the file at this point
+			if err := w.replaceWithFixedFile(entries); err != nil {
+				return entries, err
+			}
+			return entries, nil
+		}
+		// verify the CRC of the entry
+		if !VerifyCRC(&entry) {
+			// CRC mismatch, truncate the file at this point
+			log.Printf("CRC mismatch: data may be corrupted")
+			if err := w.replaceWithFixedFile(entries); err != nil {
+				return entries, err
+			}
+			return entries, nil
+		}
+		// append the entry to the entries
+		entries = append(entries, &entry)
+	}
+}
+
+// replaceWithFixedFile replaces the existing WAL file with the given entries atomically.
+func (w *WAL) replaceWithFixedFile(entries []*WAL_Entry) error {
+	// create a temporary file to makes the repair atomic
+	tempFilePath := fmt.Sprintf("%s.tmp", w.currentSegment.Name())
+	tempFile, err := os.OpenFile(tempFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	// write the entries to the temporary file
+	for _, entry := range entries {
+		// marshal the entity before writing it to the file
+		marshalEntry := MarshalEntry(entry)
+		// size of the entry
+		size := int32(len(marshalEntry))
+		// write the size of the entry to the file before writing the entry to the file
+		// this is done to read the size of the entry before reading the entry
+		if err := binary.Write(tempFile, binary.LittleEndian, size); err != nil {
+			return err
+		}
+		// write the entry to the file
+		if _, err := tempFile.Write(marshalEntry); err != nil {
+			return err
+		}
+	}
+	// close the temporary file
+	if err := tempFile.Close(); err != nil {
+		return err
+	}
+	// rename the temporary file to the original file
+	if err := os.Rename(tempFilePath, w.currentSegment.Name()); err != nil {
+		return err
+	}
+	return nil
 }
