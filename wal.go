@@ -366,3 +366,102 @@ func (w *WAL) writeEntryToBuffer(entry *WAL_Entry) error {
 	}
 	return nil
 }
+
+// Read Only Operations
+
+// ReadAll reads all the entries from the WAL. if readFromCheckPoint is true, it reads from the check point.
+// it will return all the entries from last checkpoint (if no checkpoint is found)
+// if readFromCheckPoint is false, it reads from the beginning of the WAL.
+func (w *WAL) ReadAll(readFromCheckPoint bool) ([]*WAL_Entry, error) {
+	// open the current segment file
+	file, err := os.OpenFile(w.currentSegment.Name(), os.O_RDONLY, 0644)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+}
+
+// ReadAllFromOffset start reading all log segment files from the given offset.
+// (segment Index) and returns all the entries.
+// If readFromCheckpoint is true, it will return all the entries from the last checkpoint (if no checkpoint is
+// found, it will return an empty slice.)
+func (w *WAL) ReadAllFromOffset(offset uint64, readFromCheckPoint bool) ([]*WAL_Entry, error) {
+	// get the list of log segment files in the directory
+	files, err := filepath.Glob(filepath.Join(w.directory, segmentPrefix+"*"))
+	if err != nil {
+		return nil, err
+	}
+	var entries []*WAL_Entry
+	prevCheckPointLogSequenceNumber := uint64(0) // initialize the previous check point log sequence number to 0
+	for _, file := range files {
+		// get the segment index from the file name
+		segmentIndex, err := strconv.Atoi(strings.TrimPrefix(file, filepath.Join(w.directory, segmentPrefix)))
+		if err != nil {
+			return nil, err
+		}
+		// if the segment index is less than the offset, skip the segment
+		if uint64(segmentIndex) < offset {
+			continue
+		}
+		// open the segment file, here all the segment file index is greater than the offset
+		segmentFile, err := os.OpenFile(file, os.O_RDONLY, 0644)
+		if err != nil {
+			return nil, err
+		}
+		entriesFromSegmentFile, checkpoint, err := w.ReadAllEntriesFromFile(segmentFile, readFromCheckPoint)
+		if err != nil {
+			return nil, err
+		}
+		// if the checkpoint is greater than the previous checkpoint log sequence number
+		if readFromCheckPoint && checkpoint > prevCheckPointLogSequenceNumber {
+			// clear the entries
+			entries = entries[:0]
+			// update the previous checkpoint log sequence number
+			prevCheckPointLogSequenceNumber = checkpoint
+		}
+		// append the entries from the segment file to the entries
+		entries = append(entries, entriesFromSegmentFile...)
+	}
+	return entries, nil
+}
+
+// ReadAllEntriesFromFile reads all the entries from the given file.
+// returns all the entries from the file and the last checkpoint log sequence number.
+func (w *WAL) ReadAllEntriesFromFile(file *os.File, readFromCheckPoint bool) ([]*WAL_Entry, uint64, error) {
+	var entries []*WAL_Entry
+	checkPointLogSequenceNumber := uint64(0)
+	for {
+		var size int32
+		// read the size of the entry from the file
+		if err := binary.Read(file, binary.LittleEndian, &size); err != nil {
+			// when the end of the file is reached, break the loop
+			if err == io.EOF {
+				break
+			}
+			return entries, checkPointLogSequenceNumber, err
+		}
+		data := make([]byte, size)
+		// read the data from the file
+		_, err := io.ReadFull(file, data)
+		if err != nil {
+			return entries, checkPointLogSequenceNumber, err
+		}
+		// unmarshal the data into the entity
+		entity, err := UnmarshalAndVerifyEntry(data)
+		if err != nil {
+			return entries, checkPointLogSequenceNumber, err
+		}
+		// if we are reading the entries from the checkpoint
+		// and we find the checkpoint entity, we should return
+		// the entries from the last checkpoint. So we empty the entries
+		// and start appending the entries from the checkpoint.
+		if entity.IsCheckPoint != nil && entity.GetIsCheckPoint() {
+			checkPointLogSequenceNumber = entity.GetLogSequenceNumber()
+			// reset the entries to read from the checkpoint
+			entries = entries[:0]
+		}
+		// append the entity to the entries
+		entries = append(entries, entity)
+	}
+	return entries, checkPointLogSequenceNumber, nil
+}

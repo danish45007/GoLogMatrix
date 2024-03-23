@@ -1,11 +1,15 @@
 package wal
 
 import (
+	"errors"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
+
+var ErrCRCMismatch = errors.New("CRC mismatch: data may be corrupted")
 
 // find the last segment id from the list of files
 func findLastSegmentId(files []string) (int, error) {
@@ -33,4 +37,30 @@ func createSegmentFile(directory string, segmentId int) (*os.File, error) {
 		return nil, err
 	}
 	return segmentFile, nil
+}
+
+// UnmarshalAndVerifyEntry unmarshals the data into a WAL_Entry and verifies the CRC.
+func UnmarshalAndVerifyEntry(data []byte) (*WAL_Entry, error) {
+	var entity WAL_Entry
+	// unmarshal the data into the entity
+	UnmarshalEntry(data, &entity)
+	// verify the CRC
+	if !VerifyCRC(&entity) {
+		return nil, ErrCRCMismatch
+	}
+	return &entity, nil
+
+}
+
+// VerifyCRC verifies weather the given entity has the correct CRC.
+func VerifyCRC(entity *WAL_Entry) bool {
+	// calculate the CRC of the entity
+	crc := calculateCRC(entity)
+	// compare the calculated CRC with the entity's CRC
+	return crc == entity.CRC
+}
+
+// calculateCRC calculates the CRC of the given entity.
+func calculateCRC(entity *WAL_Entry) uint32 {
+	return crc32.ChecksumIEEE(append(entity.GetData(), byte(entity.GetLogSequenceNumber())))
 }
