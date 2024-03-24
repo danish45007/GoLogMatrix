@@ -1,0 +1,14 @@
+build:
+	@go build -o bin/GoLogMatrix
+
+run: build
+	@./bin/GoLogMatrix
+
+run_test_locally:
+	@go test ./... -v
+
+run_test_in_container:
+	@docker-compose up --build
+
+clean:
+	@rm -rf bin

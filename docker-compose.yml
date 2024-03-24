@@ -1,0 +1,9 @@
+version: '3'
+
+services:
+  test-runner:
+    build:
+      context: .
+    volumes:
+      - ./tests:/app/tests
+    command: ["sh", "-c", "find ./tests -name '*.go' | entr -nr go test -v ./tests/..."]
