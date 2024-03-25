@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"log"
 	"math"
@@ -51,7 +52,7 @@ maxSegments is the maximum number of log segment files to keep.
 */
 func OpenWAL(directory string, enableFsync bool, maxFileSize int, maxSegments int) (*WAL, error) {
 	// create the directory if it does not exist
-	if err := os.Mkdir(directory, 0755); err != nil {
+	if err := os.MkdirAll(directory, 0755); err != nil {
 		return nil, err
 	}
 
@@ -236,13 +237,13 @@ func (w *WAL) getLastLogEntry() (*WAL_Entry, error) {
 }
 
 // WriteEntity writes the data to WAL
-func (w *WAL) WriteEntity(data []byte) {
-	w.writeEntity(data, false)
+func (w *WAL) WriteEntity(data []byte) error {
+	return w.writeEntity(data, false)
 }
 
 // CreateCheckPoint create a check point in the WAL.
 // A check point is a special entry in the WAL
-//that is used to restore the state of the system to a point where the check point was created.
+// that is used to restore the state of the system to a point where the check point was created.
 func (w *WAL) CreateCheckPoint() error {
 	w.writeEntity(nil, true)
 	return nil
@@ -254,13 +255,16 @@ func (w *WAL) writeEntity(data []byte, isCheckpoint bool) error {
 	w.lock.Lock()
 	defer w.lock.Unlock()
 	// rotate the segment file if the current segment file exceeds the maxFileSize
+	if err := w.rotateLogIfRequired(); err != nil {
+		return err
+	}
 	// increment the sequence number
 	w.lastSequenceNumber++
 	// create a wal entry
 	entry := &WAL_Entry{
 		LogSequenceNumber: w.lastSequenceNumber,
 		Data:              data,
-		CRC:               0,
+		CRC:               crc32.ChecksumIEEE(append(data, byte(w.lastSequenceNumber))), // calculate the CRC of the data and the sequence number to verify the data integrity
 	}
 	if isCheckpoint {
 		if err := w.Sync(); err != nil {
@@ -560,8 +564,6 @@ func (w *WAL) Repair() ([]*WAL_Entry, error) {
 		// read the entry data from the file
 		data := make([]byte, size)
 		if _, err := io.ReadFull(file, data); err != nil {
-			// Error while reading the entry data
-			log.Printf("Error while reading the entry data: %v", err)
 			// truncate the file at this point
 			if err := w.replaceWithFixedFile(entries); err != nil {
 				return entries, err

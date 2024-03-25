@@ -55,9 +55,9 @@ func UnmarshalAndVerifyEntry(data []byte) (*WAL_Entry, error) {
 // VerifyCRC verifies weather the given entity has the correct CRC.
 func VerifyCRC(entity *WAL_Entry) bool {
 	// calculate the CRC of the entity
-	crc := calculateCRC(entity)
+	actualCRC := calculateCRC(entity)
 	// compare the calculated CRC with the entity's CRC
-	return crc == entity.CRC
+	return entity.CRC == actualCRC
 }
 
 // calculateCRC calculates the CRC of the given entity.
