@@ -343,10 +343,10 @@ func (w *WAL) deleteOldestSegment() error {
 		if err != nil {
 			return err
 		}
-		// delete the oldest segment file
-		if err := os.Remove(oldestSegmentFilePath); err != nil {
-			return err
-		}
+	}
+	// delete the oldest segment file
+	if err := os.Remove(oldestSegmentFilePath); err != nil {
+		return err
 	}
 	return nil
 }
