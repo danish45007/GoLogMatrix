@@ -22,7 +22,8 @@ jobs:
 
     - name: Run tests with coverage
       run: |
-        go test -race -coverprofile=coverage.txt ./...
+        go get -u github.com/ory/go-acc
+        go-acc ./tests/...
 
     - name: Convert coverage profile to Cobertura XML
       run: go tool cover -func=coverage.txt -o coverage.out && go tool cover -html=coverage.txt -o coverage.html && go tool cover -html=coverage.txt -o coverage.xml
