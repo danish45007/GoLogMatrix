@@ -290,7 +290,7 @@ func TestWAL_SegmentRotation(t *testing.T) {
 func TestWAL_OldSegmentDeletion(t *testing.T) {
 	t.Parallel()
 	dirPath := "TestWAL_OldSegmentDeletion"
-	// defer os.RemoveAll(dirPath)
+	defer os.RemoveAll(dirPath)
 
 	wallog, err := wal.OpenWAL(dirPath, true, maxFileSize, maxSegments)
 	assert.NoError(t, err, "Failed to create WAL")
@@ -334,5 +334,207 @@ func TestWAL_OldSegmentDeletion(t *testing.T) {
 	assert.NoError(t, err)
 	for idx, file := range files {
 		assert.Equal(t, file.Name(), fmt.Sprintf("%s%d", "segment-", idx+2), "Unexpected file found")
+	}
+}
+
+// Test the checkpoint functionality of the WAL
+// Write some entries to the WAL, checkpoint the WAL, write some more entries and recover the data
+// ReadAll should return the entries after the checkpoint
+
+func TestWAL_Checkpoint(t *testing.T) {
+	t.Parallel()
+	dirPath := "TestWAL_Checkpoint"
+	defer os.RemoveAll(dirPath) // Cleanup after the test
+	wallog, err := wal.OpenWAL(dirPath, true, maxFileSize, maxSegments)
+	assert.NoError(t, err, "Failed to create WAL")
+	defer wallog.Close()
+
+	// Test data to write mimicking the data that would be written by the key-value store
+	entries := []Record{
+		{Key: "key1", Value: []byte("value1"), Op: InsertionOperation},
+		{Key: "key2", Value: []byte("value2"), Op: InsertionOperation},
+		{Key: "key3", Op: DeletionOperation},
+	}
+	// Write the test data to WAL
+	for _, entry := range entries {
+		// Marshal the record before writing
+		marshaledEntry, err := json.Marshal(entry)
+		assert.NoError(t, err, "Failed to marshal entry")
+		assert.NoError(t, wallog.WriteEntity(marshaledEntry), "Failed to write entry")
+	}
+
+	// create a checkpoint
+	assert.NoError(t, wallog.CreateCheckPoint([]byte("checkpoint")), "Failed to create checkpoint")
+
+	// write some more entries to WAL
+	nextSetOfEntries := []Record{
+		{Key: "key4", Value: []byte("value4"), Op: InsertionOperation},
+		{Key: "key5", Value: []byte("value5"), Op: InsertionOperation},
+		{Key: "key6", Op: DeletionOperation},
+	}
+	for _, entry := range nextSetOfEntries {
+		// marshal the record before writing
+		marshaledEntry, err := json.Marshal(entry)
+		assert.NoError(t, err, "Failed to marshal entry")
+		assert.NoError(t, wallog.WriteEntity(marshaledEntry), "Failed to write entry")
+	}
+
+	// sync data to disk
+	err = wallog.Sync()
+	assert.NoError(t, err, "Failed to sync data to disk")
+
+	// recover the data from the WAL
+	recoveredEntry, err := wallog.ReadAll(true)
+	assert.NoError(t, err, "Failed to recover entries")
+	expectedEntriesCount := 1 + len(nextSetOfEntries) // 1 for the checkpoint
+	//check the size of the recovered entries with the expected entries
+	assert.Equal(t, expectedEntriesCount, len(recoveredEntry), "Recovered entries count does not match written entries count")
+	// check if the recovered entries matches with written entries
+	for entryIndex, entry := range recoveredEntry {
+		// skip the checkpoint entry at index 0
+		if entryIndex == 0 {
+			assert.Equal(t, "checkpoint", string(entry.Data), "Recovered entry does not match checkpoint entry")
+			continue
+		}
+		unMarshalledEntry := Record{}
+		assert.NoError(t, json.Unmarshal(entry.Data, &unMarshalledEntry), "Failed to unmarshal entry")
+		// can't use deep equality due the sequence number
+		assert.Equal(t, nextSetOfEntries[entryIndex-1].Key, unMarshalledEntry.Key, "Recovered entry does not match written entry (Key)")
+		assert.Equal(t, nextSetOfEntries[entryIndex-1].Op, unMarshalledEntry.Op, "Recovered entry does not match written entry (Op)")
+		assert.True(t, reflect.DeepEqual(nextSetOfEntries[entryIndex-1].Value, unMarshalledEntry.Value), "Recovered entry does not match written entry (Value)")
+	}
+}
+
+// Perform the following operations:
+// 1. Write some entries to the WAL
+// 2. Create a checkpoint
+// 3. Write some more entries to the WAL
+// 4. Create a checkpoint
+// 5. Write some more entries to the WAL
+// 6. Recover the data from the WAL
+// 7. Verify that the recovered entries are correct
+
+func TestWAL_MultipleCheckpoints(t *testing.T) {
+	t.Parallel()
+	dirPath := "TestWAL_MultipleCheckpoints"
+	defer os.RemoveAll(dirPath) // Cleanup after the test
+	wallog, err := wal.OpenWAL(dirPath, true, maxFileSize, maxSegments)
+	assert.NoError(t, err, "Failed to create WAL")
+	defer wallog.Close()
+
+	// Test data to write mimicking the data that would be written by the key-value store
+	entries := []Record{
+		{Key: "key1", Value: []byte("value1"), Op: InsertionOperation},
+		{Key: "key2", Value: []byte("value2"), Op: InsertionOperation},
+		{Key: "key3", Op: DeletionOperation},
+	}
+	// Write the test data to WAL
+	for _, entry := range entries {
+		// Marshal the record before writing
+		marshaledEntry, err := json.Marshal(entry)
+		assert.NoError(t, err, "Failed to marshal entry")
+		assert.NoError(t, wallog.WriteEntity(marshaledEntry), "Failed to write entry")
+	}
+	// create a checkpoint
+	assert.NoError(t, wallog.CreateCheckPoint([]byte("checkpoint1")), "Failed to create checkpoint")
+
+	// write some more entries to WAL
+	nextSetOfEntries := []Record{
+		{Key: "key2", Value: []byte("value2"), Op: InsertionOperation},
+		{Key: "key3	", Value: []byte("value3"), Op: InsertionOperation},
+		{Key: "key4", Op: DeletionOperation},
+	}
+	for _, entry := range nextSetOfEntries {
+		// marshal the record before writing
+		marshaledEntry, err := json.Marshal(entry)
+		assert.NoError(t, err, "Failed to marshal entry")
+		assert.NoError(t, wallog.WriteEntity(marshaledEntry), "Failed to write entry")
+	}
+	// create a checkpoint
+	assert.NoError(t, wallog.CreateCheckPoint([]byte("checkpoint2")), "Failed to create checkpoint")
+
+	// write some more entries to WAL
+	nextSetOfEntries = []Record{
+		{Key: "key5", Value: []byte("value5"), Op: InsertionOperation},
+		{Key: "key6", Value: []byte("value6"), Op: InsertionOperation},
+	}
+	for _, entry := range nextSetOfEntries {
+		// marshal the record before writing
+		marshaledEntry, err := json.Marshal(entry)
+		assert.NoError(t, err, "Failed to marshal entry")
+		assert.NoError(t, wallog.WriteEntity(marshaledEntry), "Failed to write entry")
+	}
+	// sync data to disk
+	err = wallog.Sync()
+	assert.NoError(t, err, "Failed to sync data to disk")
+	// recover the data from the WAL
+	recoveredEntry, err := wallog.ReadAll(true)
+	assert.NoError(t, err, "Failed to recover entries")
+	expectedEntriesCount := 1 + len(nextSetOfEntries) // 1 for the checkpoint
+	//check the size of the recovered entries with the expected entries
+	assert.Equal(t, expectedEntriesCount, len(recoveredEntry), "Recovered entries count does not match written entries count")
+	// check if the recovered entries matches with written entries
+	for entryIndex, entry := range recoveredEntry {
+		// skip the checkpoint entry at index 0
+		if entryIndex == 0 {
+			assert.Equal(t, "checkpoint2", string(entry.Data), "Recovered entry does not match checkpoint entry")
+			continue
+		}
+		unMarshalledEntry := Record{}
+		assert.NoError(t, json.Unmarshal(entry.Data, &unMarshalledEntry), "Failed to unmarshal entry")
+		// can't use deep equality due the sequence number
+		assert.Equal(t, nextSetOfEntries[entryIndex-1].Key, unMarshalledEntry.Key, "Recovered entry does not match written entry (Key)")
+		assert.Equal(t, nextSetOfEntries[entryIndex-1].Op, unMarshalledEntry.Op, "Recovered entry does not match written entry (Op)")
+		assert.True(t, reflect.DeepEqual(nextSetOfEntries[entryIndex-1].Value, unMarshalledEntry.Value), "Recovered entry does not match written entry (Value)")
+	}
+}
+
+// Test Wal no write after checkpoint is created
+func TestWAL_NoWriteAfterCheckpoint(t *testing.T) {
+	t.Parallel()
+	dirPath := "TestWAL_NoWriteAfterCheckpoint"
+	defer os.RemoveAll(dirPath) // Cleanup after the test
+	wallog, err := wal.OpenWAL(dirPath, true, maxFileSize, maxSegments)
+	assert.NoError(t, err, "Failed to create WAL")
+	defer wallog.Close()
+
+	// Test data to write mimicking the data that would be written by the key-value store
+	entries := []Record{
+		{Key: "key1", Value: []byte("value1"), Op: InsertionOperation},
+		{Key: "key2", Value: []byte("value2"), Op: InsertionOperation},
+		{Key: "key3", Op: DeletionOperation},
+	}
+	// Write the test data to WAL
+	for _, entry := range entries {
+		// Marshal the record before writing
+		marshaledEntry, err := json.Marshal(entry)
+		assert.NoError(t, err, "Failed to marshal entry")
+		assert.NoError(t, wallog.WriteEntity(marshaledEntry), "Failed to write entry")
+	}
+	// create a checkpoint
+	assert.NoError(t, wallog.CreateCheckPoint([]byte("checkpoint")), "Failed to create checkpoint")
+
+	// sync data to disk
+	err = wallog.Sync()
+	assert.NoError(t, err, "Failed to sync data to disk")
+	// recover the data from the WAL
+	recoveredEntry, err := wallog.ReadAll(true)
+	assert.NoError(t, err, "Failed to recover entries")
+	expectedEntriesCount := 1 // 1 for the checkpoint
+	//check the size of the recovered entries with the expected entries
+	assert.Equal(t, expectedEntriesCount, len(recoveredEntry), "Recovered entries count does not match written entries count")
+	// check if the recovered entries matches with written entries
+	for entryIndex, entry := range recoveredEntry {
+		// skip the checkpoint entry at index 0
+		if entryIndex == 0 {
+			assert.Equal(t, "checkpoint", string(entry.Data), "Recovered entry does not match checkpoint entry")
+			continue
+		}
+		unMarshalledEntry := Record{}
+		assert.NoError(t, json.Unmarshal(entry.Data, &unMarshalledEntry), "Failed to unmarshal entry")
+		// can't use deep equality due the sequence number
+		assert.Equal(t, entries[entryIndex-1].Key, unMarshalledEntry.Key, "Recovered entry does not match written entry (Key)")
+		assert.Equal(t, entries[entryIndex-1].Op, unMarshalledEntry.Op, "Recovered entry does not match written entry (Op)")
+		assert.True(t, reflect.DeepEqual(entries[entryIndex-1].Value, unMarshalledEntry.Value), "Recovered entry does not match written entry (Value)")
 	}
 }

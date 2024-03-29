@@ -244,8 +244,8 @@ func (w *WAL) WriteEntity(data []byte) error {
 // CreateCheckPoint create a check point in the WAL.
 // A check point is a special entry in the WAL
 // that is used to restore the state of the system to a point where the check point was created.
-func (w *WAL) CreateCheckPoint() error {
-	w.writeEntity(nil, true)
+func (w *WAL) CreateCheckPoint(data []byte) error {
+	w.writeEntity(data, true)
 	return nil
 }
 
@@ -573,8 +573,15 @@ func (w *WAL) Repair() ([]*WAL_Entry, error) {
 
 		// unmarshal the data into the entity
 		var entry WAL_Entry
+		// skip the check point entry
+
+		if entry.IsCheckPoint != nil && entry.GetIsCheckPoint() {
+			log.Printf("Skipping the check point entry")
+			continue
+		}
 		if err := proto.Unmarshal(data, &entry); err != nil {
 			// Error while unmarshalling the data
+
 			log.Printf("Error while unmarshalling the data: %v", err)
 			// truncate the file at this point
 			if err := w.replaceWithFixedFile(entries); err != nil {
