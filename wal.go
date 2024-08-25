@@ -429,7 +429,7 @@ func (w *WAL) ReadAll(readFromCheckPoint bool) ([]*WAL_Entry, error) {
 // (segment Index) and returns all the entries.
 // If readFromCheckpoint is true, it will return all the entries from the last checkpoint (if no checkpoint is
 // found, it will return an empty slice.)
-func (w *WAL) ReadAllFromOffset(offset uint64, readFromCheckPoint bool) ([]*WAL_Entry, error) {
+func (w *WAL) ReadAllFromOffset(offset int, readFromCheckPoint bool) ([]*WAL_Entry, error) {
 	// get the list of log segment files in the directory
 	files, err := filepath.Glob(filepath.Join(w.directory, segmentPrefix+"*"))
 	if err != nil {
@@ -444,7 +444,7 @@ func (w *WAL) ReadAllFromOffset(offset uint64, readFromCheckPoint bool) ([]*WAL_
 			return nil, err
 		}
 		// if the segment index is less than the offset, skip the segment
-		if uint64(segmentIndex) < offset {
+		if segmentIndex < offset {
 			continue
 		}
 		// open the segment file, here all the segment file index is greater than the offset
